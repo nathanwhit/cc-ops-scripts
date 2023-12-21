@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "k8sApi/": "https://deno.land/x/kubernetes_apis@v0.5.0/",
+    "k8sClient/": "https://deno.land/x/kubernetes_client@v0.7.1/"
+  }
+}
