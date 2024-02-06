@@ -14,7 +14,11 @@ import {
 import { deleteRocksdb } from "./delete-rocksdb.ts";
 import $ from "https://deno.land/x/dax@0.35.0/mod.ts";
 
-async function cleanupPvs(api: CoreV1Api, pvcNamespace = "creditcoin") {
+async function cleanupPvs(
+  api: CoreV1Api,
+  yes = false,
+  pvcNamespace = "creditcoin"
+) {
   const pvs = await api.getPersistentVolumeList();
   for (const pv of pvs.items) {
     const spec = pv.spec;
@@ -29,9 +33,10 @@ async function cleanupPvs(api: CoreV1Api, pvcNamespace = "creditcoin") {
         continue;
       }
       if (
-        await $.confirm(
+        yes ||
+        (await $.confirm(
           `Delete PV ${name} (has claim ${pv.spec?.claimRef?.name})`
-        )
+        ))
       ) {
         const phase = pv.status?.phase;
         if (!phase) {
@@ -58,7 +63,7 @@ async function cleanupPvs(api: CoreV1Api, pvcNamespace = "creditcoin") {
             continue;
           }
           const nsApi = api.namespace(claimRef.namespace ?? pvcNamespace);
-          if (await $.confirm(`Delete PVC ${claimName}?`)) {
+          if (yes || (await $.confirm(`Delete PVC ${claimName}?`))) {
             const patch = {
               spec: {
                 persistentVolumeReclaimPolicy: "Delete",
@@ -132,10 +137,12 @@ await new Command()
   .command("delete-rocksdb")
   .arguments("<pod-name:string>")
   .option("-n, --namespace <namespace:string>", "Kubernetes namespace")
+  .option("-y --yes", "Skip confirmation (USE WITH CAUTION)")
+  .option("--chain-name <chain-name:string>", "Chain name")
   .description("Delete the rocksdb directory of a pod")
-  .action(async ({ namespace }, podName) => {
+  .action(async ({ namespace, chainName, yes }, podName) => {
     const pvcName = podPvcName(podName);
-    await deleteRocksdb(coreApi, batchApi, pvcName, namespace);
+    await deleteRocksdb(coreApi, batchApi, pvcName, chainName, namespace, yes);
   })
   .command("force-bind")
   .arguments("<pv-name:string> <pvc-name:string>")
@@ -145,8 +152,9 @@ await new Command()
     await patchClaimRef(coreApi, pvName, pvcName, namespace);
   })
   .command("cleanup-pvs")
-  .action(async () => {
-    await cleanupPvs(coreApi);
+  .option("-y --yes", "Skip confirmation (USE WITH CAUTION)")
+  .action(async ({ yes }) => {
+    await cleanupPvs(coreApi, yes);
   })
   .command("fix-reclaim-policies")
   .option("-y --yes", "Skip confirmation")
