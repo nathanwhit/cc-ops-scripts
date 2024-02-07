@@ -1,9 +1,12 @@
 import { KubectlRawRestClient } from "k8sClient/mod.ts";
 import { CoreV1Api } from "k8sApi/builtin/core@v1/mod.ts";
 import { BatchV1Api } from "k8sApi/builtin/batch@v1/mod.ts";
+import { AppsV1Api } from "k8sApi/builtin/apps@v1/mod.ts";
 import {
   Command,
   HelpCommand,
+  ArgumentValue,
+  ValidationError,
 } from "https://deno.land/x/cliffy@v1.0.0-rc.3/command/mod.ts";
 import {
   migrateStorage,
@@ -13,6 +16,8 @@ import {
 } from "./migrate.ts";
 import { deleteRocksdb } from "./delete-rocksdb.ts";
 import $ from "https://deno.land/x/dax@0.35.0/mod.ts";
+import { Quantity, toQuantity } from "k8sApi/common.ts";
+import { assertNonEmpty } from "./util.ts";
 
 async function cleanupPvs(
   api: CoreV1Api,
@@ -116,6 +121,100 @@ async function fixReclaimPolicies(api: CoreV1Api, yes = false) {
   }
 }
 
+// async function restartPod(
+//   api: CoreV1Api,
+//   podName: string,
+//   namespace = "creditcoin"
+// ) {
+//   await api.namespace(namespace).deletePod(podName);
+
+//   const isReady = (s: Pod) => {
+//     return s.status?.containerStatuses?.every(({ ready }) => ready);
+//   };
+//   const getStatus = () => {
+//     return api.namespace(namespace).getPodStatus(podName);
+//   };
+
+//   let status = await getStatus();
+
+//   while (!isReady(status)) {
+//     console.log("waiting for pod to be ready");
+//     await sleep(2000);
+//     status = await getStatus();
+//   }
+//   console.log(`pod ${podName} is ready`);
+// }
+
+async function resizeStatefulSetPvcs(
+  api: CoreV1Api,
+  appsApi: AppsV1Api,
+  statefulsetName: string,
+  newSize: Quantity,
+  namespace = "creditcoin",
+  dryRun = false
+) {
+  if (await $.confirm(`Delete statefulset ${statefulsetName}?`)) {
+    await appsApi.namespace(namespace).deleteStatefulSet(
+      statefulsetName,
+      dryRun
+        ? {
+            dryRun: "client",
+            propagationPolicy: "Orphan",
+          }
+        : {
+            propagationPolicy: "Orphan",
+          }
+    );
+  }
+
+  const pvcs = await api.namespace(namespace).getPersistentVolumeClaimList();
+  for (const pvc of pvcs.items) {
+    const name = assertNonEmpty(pvc?.metadata?.name);
+    if (name.startsWith("node-storage-") && name.includes(statefulsetName)) {
+      const patch = {
+        spec: {
+          resources: {
+            requests: {
+              storage: newSize,
+            },
+          },
+        },
+      };
+      console.log(`patching PVC ${name}`);
+      if (!(await $.confirm(`Patch PVC ${name}?`))) {
+        return;
+      }
+      await api.namespace(namespace).patchPersistentVolumeClaim(
+        name,
+        "strategic-merge",
+        patch,
+        dryRun
+          ? {
+              dryRun: "client",
+            }
+          : undefined
+      );
+    }
+  }
+
+  console.log(
+    `%cYou now need to perform a helm upgrade for the statefulset, make sure you've updated the values for the helm chart to match the new PVC size!`,
+    "color: orange"
+  );
+}
+
+function quantityType({ label, name, value }: ArgumentValue): Quantity {
+  const quantity = toQuantity(value);
+
+  if (isNaN(quantity.number) || quantity.suffix.trim() === "") {
+    throw new ValidationError(
+      `${label} "${name}" must be a valid quantity, but got "${value}". A valid quantity is a number followed by a unit, e.g. "1Gi" or "1000M"`
+    );
+  }
+
+  return quantity;
+}
+
 const k8s = new KubectlRawRestClient();
 const coreApi = new CoreV1Api(k8s);
 const batchApi = new BatchV1Api(k8s);
@@ -126,6 +225,11 @@ await new Command()
   .description("Disk migration tool for Creditcoin")
   .default("help")
   .command("help", new HelpCommand().global())
+
+  .type("quantity", quantityType, {
+    global: true,
+  })
+
   .command("migrate")
   .arguments("<pod-name:string>")
   .option("-n, --namespace <namespace:string>", "Kubernetes namespace")
@@ -160,5 +264,21 @@ await new Command()
   .option("-y --yes", "Skip confirmation")
   .action(async ({ yes }) => {
     await fixReclaimPolicies(coreApi, yes);
+  })
+  .command("resize-statefulset-pvcs <statefulset-name:string>")
+  .type("quantity", quantityType)
+  .option("-n, --namespace <namespace:string>", "Kubernetes namespace")
+  .option("--new-size <new-size:quantity>", "New size", { required: true })
+  .option("--dry-run", "Dry run (no changes)")
+  .action(async ({ namespace, newSize, dryRun }, stsName) => {
+    const appsApi = new AppsV1Api(k8s);
+    await resizeStatefulSetPvcs(
+      coreApi,
+      appsApi,
+      stsName,
+      newSize,
+      namespace,
+      dryRun
+    );
   })
   .parse(Deno.args);
