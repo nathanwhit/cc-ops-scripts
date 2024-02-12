@@ -215,12 +215,36 @@ function quantityType({ label, name, value }: ArgumentValue): Quantity {
   return quantity;
 }
 
+async function checkCluster() {
+  const result =
+    await $`kubectl config view --minify -o jsonpath='{.clusters[].name}'`.stdout(
+      "piped"
+    );
+  const cluster = result.stdout.trim();
+  if (
+    !(await $.confirm(
+      `Currently connected to ${cluster}, are you sure this is the right cluster?`
+    ))
+  ) {
+    Deno.exit(1);
+  }
+}
+
 const k8s = new KubectlRawRestClient();
 const coreApi = new CoreV1Api(k8s);
 const batchApi = new BatchV1Api(k8s);
 
 await new Command()
   .name("disk-migration")
+  .globalOption(
+    "--no-confirm-cluster",
+    "Skip prompt confirming you are on the right cluster"
+  )
+  .globalAction(async ({ confirmCluster }) => {
+    if (confirmCluster) {
+      await checkCluster();
+    }
+  })
   .version("0.1.0")
   .description("Disk migration tool for Creditcoin")
   .default("help")
@@ -256,16 +280,25 @@ await new Command()
     await patchClaimRef(coreApi, pvName, pvcName, namespace);
   })
   .command("cleanup-pvs")
+  .description(
+    "Delete PVs backed by azurefile storage, will prompt for confirmation before each destructive action"
+  )
   .option("-y --yes", "Skip confirmation (USE WITH CAUTION)")
   .action(async ({ yes }) => {
     await cleanupPvs(coreApi, yes);
   })
   .command("fix-reclaim-policies")
+  .description(
+    "Make sure all PVs have reclaim policy set to 'Delete'. This only is useful if you've manually changed reclaim policices of PVs to 'Retain' in order to keep them around, and now you want to revert them back to 'Delete'"
+  )
   .option("-y --yes", "Skip confirmation")
   .action(async ({ yes }) => {
     await fixReclaimPolicies(coreApi, yes);
   })
   .command("resize-statefulset-pvcs <statefulset-name:string>")
+  .description(
+    "Resize all PVCs for a statefulset. This will perform the actions on the k8s side, but you will need to perform a helm upgrade to update the PVC size in the helm chart values. It will print a warning at the end to remind you to do this."
+  )
   .type("quantity", quantityType)
   .option("-n, --namespace <namespace:string>", "Kubernetes namespace")
   .option("--new-size <new-size:quantity>", "New size", { required: true })
