@@ -246,7 +246,7 @@ await new Command()
     }
   })
   .version("0.1.0")
-  .description("Disk migration tool for Creditcoin")
+  .description("Ops tool for Creditcoin")
   .default("help")
   .command("help", new HelpCommand().global())
 
