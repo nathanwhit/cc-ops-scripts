@@ -235,7 +235,7 @@ const coreApi = new CoreV1Api(k8s);
 const batchApi = new BatchV1Api(k8s);
 
 await new Command()
-  .name("disk-migration")
+  .name("cc-ops")
   .globalOption(
     "--no-confirm-cluster",
     "Skip prompt confirming you are on the right cluster"
