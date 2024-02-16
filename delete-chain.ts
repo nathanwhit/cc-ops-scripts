@@ -5,7 +5,18 @@ import { CoreV1Api } from "k8sApi/builtin/core@v1/mod.ts";
 import { waitForJobCompletion } from "./jobs.ts";
 import $ from "https://deno.land/x/dax@0.35.0/mod.ts";
 
-function makeJobSpec(pvcName: string, chainName: string): Job {
+function makeJobSpec({
+  pvcName,
+  chainName,
+  deleteFrontier,
+}: {
+  pvcName: string;
+  chainName: string;
+  deleteFrontier: boolean;
+}): Job {
+  const frontier = deleteFrontier
+    ? `&& rm -rf /src_vol/chains/${chainName}/frontier`
+    : "";
   return {
     apiVersion: "batch/v1",
     kind: "Job",
@@ -22,7 +33,7 @@ function makeJobSpec(pvcName: string, chainName: string): Job {
               image: "debian",
               command: ["/bin/bash", "-c"],
               args: [
-                `ls -lah /src_vol/chains/${chainName} && rm -rf /src_vol/chains/${chainName}/db && rm -rf /src_vol/chains/${chainName}/frontier && ls -lah /src_vol/chains/${chainName}`,
+                `ls -lah /src_vol/chains/${chainName} && rm -rf /src_vol/chains/${chainName}/db ${frontier} && ls -lah /src_vol/chains/${chainName}`,
               ],
               volumeMounts: [
                 {
@@ -48,15 +59,24 @@ function makeJobSpec(pvcName: string, chainName: string): Job {
   };
 }
 
-export async function deleteRocksdb(
+export async function deleteChain(
   api: CoreV1Api,
   batchApi: BatchV1Api,
-  pvcName: string,
-  chainName = "creditcoin3_dev",
-  namespace = "creditcoin",
-  yes = false
+  {
+    pvcName,
+    chainName = "creditcoin3_dev",
+    namespace = "creditcoin",
+    yes = false,
+    deleteFrontier = true,
+  }: {
+    pvcName: string;
+    chainName?: string;
+    namespace?: string;
+    yes?: boolean;
+    deleteFrontier?: boolean;
+  }
 ) {
-  const jobSpec = makeJobSpec(pvcName, chainName);
+  const jobSpec = makeJobSpec({ pvcName, chainName, deleteFrontier });
   // console.log(JSON.stringify(jobSpec, null, 2));
   const jobName = assertNonEmpty(jobSpec.metadata?.name, "jobName");
   if (yes || (await $.confirm(`Delete rocksdb for ${pvcName}?`))) {

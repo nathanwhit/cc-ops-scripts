@@ -14,7 +14,7 @@ import {
   podPvcName,
   removeClaimRef,
 } from "./migrate.ts";
-import { deleteRocksdb } from "./delete-rocksdb.ts";
+import { deleteChain } from "./delete-chain.ts";
 import $ from "https://deno.land/x/dax@0.35.0/mod.ts";
 import { Quantity, toQuantity } from "k8sApi/common.ts";
 import { assertNonEmpty } from "./util.ts";
@@ -148,10 +148,17 @@ async function fixReclaimPolicies(api: CoreV1Api, yes = false) {
 async function resizeStatefulSetPvcs(
   api: CoreV1Api,
   appsApi: AppsV1Api,
-  statefulsetName: string,
-  newSize: Quantity,
-  namespace = "creditcoin",
-  dryRun = false
+  {
+    statefulsetName,
+    newSize,
+    namespace = "creditcoin",
+    dryRun = false,
+  }: {
+    statefulsetName: string;
+    newSize: Quantity;
+    namespace?: string;
+    dryRun?: boolean;
+  }
 ) {
   if (await $.confirm(`Delete statefulset ${statefulsetName}?`)) {
     await appsApi.namespace(namespace).deleteStatefulSet(
@@ -262,15 +269,52 @@ await new Command()
     const pvcName = podPvcName(podName);
     await migrateStorage(coreApi, batchApi, pvcName, namespace);
   })
-  .command("delete-rocksdb")
+  .command("delete-chain")
+  .description(
+    "Delete the chain storage directories (the main rocksdb and frontier db) of a pod"
+  )
   .arguments("<pod-name:string>")
   .option("-n, --namespace <namespace:string>", "Kubernetes namespace")
   .option("-y --yes", "Skip confirmation (USE WITH CAUTION)")
   .option("--chain-name <chain-name:string>", "Chain name")
+  .option(
+    "--no-frontier",
+    "Do not delete the frontier db in addition to the rocksdb (for CC2 chains)"
+  )
+  .option(
+    "--regex",
+    "Use regex to match pod name. The argument to the command is expected to be the regex, all matching pods will be operated on. Note that (by default) it will prompt for confirmation before each destructive action. Use --yes to skip confirmation.",
+    { default: false }
+  )
   .description("Delete the rocksdb directory of a pod")
-  .action(async ({ namespace, chainName, yes }, podName) => {
-    const pvcName = podPvcName(podName);
-    await deleteRocksdb(coreApi, batchApi, pvcName, chainName, namespace, yes);
+  .action(async ({ namespace, chainName, yes, regex, frontier }, podName) => {
+    if (regex) {
+      const pods = await coreApi
+        .namespace(namespace ?? "creditcoin")
+        .getPodList();
+      const matchingPvcs = pods.items
+        .filter((pod) => new RegExp(podName).test(pod.metadata?.name || ""))
+        .map((pod) => podPvcName(assertNonEmpty(pod.metadata?.name)));
+      const promises = matchingPvcs.map((pvcName) =>
+        deleteChain(coreApi, batchApi, {
+          pvcName,
+          chainName,
+          namespace,
+          yes,
+          deleteFrontier: frontier,
+        })
+      );
+      await Promise.all(promises);
+    } else {
+      const pvcName = podPvcName(podName);
+      await deleteChain(coreApi, batchApi, {
+        pvcName,
+        chainName,
+        namespace,
+        yes,
+        deleteFrontier: frontier,
+      });
+    }
   })
   .command("force-bind")
   .arguments("<pv-name:string> <pvc-name:string>")
@@ -305,13 +349,11 @@ await new Command()
   .option("--dry-run", "Dry run (no changes)")
   .action(async ({ namespace, newSize, dryRun }, stsName) => {
     const appsApi = new AppsV1Api(k8s);
-    await resizeStatefulSetPvcs(
-      coreApi,
-      appsApi,
-      stsName,
+    await resizeStatefulSetPvcs(coreApi, appsApi, {
+      statefulsetName: stsName,
       newSize,
       namespace,
-      dryRun
-    );
+      dryRun,
+    });
   })
   .parse(Deno.args);
