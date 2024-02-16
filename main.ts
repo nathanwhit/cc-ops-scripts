@@ -289,12 +289,12 @@ await new Command()
   .description("Delete the rocksdb directory of a pod")
   .action(async ({ namespace, chainName, yes, regex, frontier }, podName) => {
     if (regex) {
-      const pods = await coreApi
+      const pvcs = await coreApi
         .namespace(namespace ?? "creditcoin")
-        .getPodList();
-      const matchingPvcs = pods.items
+        .getPersistentVolumeClaimList();
+      const matchingPvcs = pvcs.items
         .filter((pod) => new RegExp(podName).test(pod.metadata?.name || ""))
-        .map((pod) => podPvcName(assertNonEmpty(pod.metadata?.name)));
+        .map((pod) => assertNonEmpty(pod.metadata?.name));
       const promises = matchingPvcs.map((pvcName) =>
         deleteChain(coreApi, batchApi, {
           pvcName,
